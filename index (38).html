@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="TBL Prices">
+  <title>The Baddie Lab</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;700&family=Poppins:wght@500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { min-height: 100vh; background: #000; }
+    body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+  </style>
+</head>
+<body>
+<div id="root"><div style="color:#f3c2d7;padding:40px;font-family:sans-serif;text-align:center;font-size:14px">Loading…</div></div>
+
+<script>
+  window.onerror = function(msg, src, line) {
+    document.getElementById('root').innerHTML =
+      '<div style="color:#f3c2d7;padding:30px;font-family:monospace;font-size:13px"><b>Error:</b><br>' + msg + '<br>Line: ' + line + '</div>';
+  };
+  var _icon = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" fill="#000"/><text x="256" y="310" text-anchor="middle" font-family="Georgia,serif" font-size="120" fill="#f3c2d7">TBL</text></svg>');
+  var _m = {name:"The Baddie Lab",short_name:"TBL Prices",start_url:"./",display:"standalone",background_color:"#000",theme_color:"#000",icons:[{src:_icon,sizes:"512x512",type:"image/svg+xml"}]};
+  var _ml = document.createElement('link'); _ml.rel='manifest'; _ml.href=URL.createObjectURL(new Blob([JSON.stringify(_m)],{type:'application/json'})); document.head.appendChild(_ml);
+  var _al = document.createElement('link'); _al.rel='apple-touch-icon'; _al.href=_icon; document.head.appendChild(_al);
+  if ('serviceWorker' in navigator) {
+    var sw = "const C='tbl-v3';self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil((async()=>{const keys=await caches.keys();await Promise.all(keys.filter(k=>k!==C).map(k=>caches.delete(k)));await clients.claim();})()));self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;e.respondWith(caches.open(C).then(ca=>ca.match(e.request).then(h=>{const n=fetch(e.request).then(r=>{ca.put(e.request,r.clone());return r;}).catch(()=>h);return h||n;})));});";
+    navigator.serviceWorker.register(URL.createObjectURL(new Blob([sw],{type:'application/javascript'}))).catch(function(){});
+  }
+</script>
+
+<script type="text/babel">
+const { useState, useMemo, useEffect } = React;
+
+// ── Firestore REST API ──
+const FS_URL = "https://firestore.googleapis.com/v1/projects/tbl-pricelist/databases/(default)/documents/settings/prices";
+const FS_KEY = "AIzaSyA2ec8_5_sS3R1fU4lTEo_Kd9W11gNQ7Qo";
+
+const CACHE_KEY = "tbl_local_cache";
+
+async function fsGet() {
+  try {
+    const r = await fetch(FS_URL + "?key=" + FS_KEY);
+    if (r.status === 404 || r.status === 400) return null;
+    const d = await r.json();
+    return d.fields && d.fields.value ? d.fields.value.stringValue : null;
+  } catch(e) { return null; }
+}
+
+async function fsSet(value) {
+  const r = await fetch(FS_URL + "?key=" + FS_KEY + "&updateMask.fieldPaths=value", {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: { value: { stringValue: value } } })
+  });
+  if (!r.ok) { const t = await r.text(); throw new Error(t); }
+  return true;
+}
+
+// ── Data ──
+const DEFAULT_SERVICES = {
+  "Consultation": [
+    { name: "In Person Consultation", price: 10000, autoDiscount: 5000, isConsultation: true },
+    { name: "Virtual Consultation", price: 15000, isConsultation: true },
+    { name: "Follow Up (within 12 months)", price: 0, isConsultation: true },
+  ],
+  "IM Injections": [
+    { name: "Biotin", price: 30000 }, { name: "Glutathione IM", price: 35000 },
+    { name: "Vitamin B12", price: 15000 }, { name: "Ondansetron for Nausea (IM)", price: 40000 },
+    { name: "Liquid Lipo (a la carte - no B12)", price: 45000 }, { name: "Vitamin C (IV Push)", price: 40000 },
+    { name: "Glutathione with Vitamin C (IV Push)", price: 70000 }, { name: "Vitamin B Complex", price: 23000 },
+  ],
+  "IV Infusions": [
+    { name: "Dreambody Post & Pre OP Drip", price: 95000 }, { name: "Fountain of Youth Drip", price: 95000 },
+    { name: "Baddie Lifestyle (Myers Cocktail) Drip", price: 95000 }, { name: "Ondansetron for Nausea (IV)", price: 50000 },
+    { name: "Quick Drip Boost", price: 25000 }, { name: "Glutathione (Add-on)", price: 45000 },
+  ],
+  "Popular Infusions": [
+    { name: "Glass Skin Treatment Drip", price: 80000 }, { name: "Billion Dollar Bawdy Drip", price: 75000 },
+    { name: "Trillion Dollar Bawdy Drip", price: 95000 },
+  ],
+  "NAD+ Treatment": [
+    { name: "NAD+ Drip 100mg", price: 150000 }, { name: "NAD+ Drip 150mg", price: 220000 },
+    { name: "NAD+ Drip 250mg", price: 380000 }, { name: "NAD+ Drip 720mg", price: 680000 },
+    { name: "NAD+ IM Injection", price: 85000 }, { name: "NAD+ SUBQ Injection", price: 45000 },
+  ],
+  "Weight Loss Programs": [
+    { name: "Duromine 30mg (Phentermine Program)", price: 400000 }, { name: "Phentermine 37.5mg", price: 490000 },
+    { name: "Ozempic 0.5mg", price: 600000 }, { name: "Ozempic 1mg", price: 675000 },
+    { name: "The Kim-K Shot (Semaglutide)", price: 130000 }, { name: "Liquid Lipo Plan (4 injections + B12)", price: 170000 },
+    { name: "Injection of Outside Injectables (IM only)", price: 20000 }, { name: "Mounjaro 2.5mg", price: 750000 },
+    { name: "Mounjaro 5mg", price: 805000 }, { name: "Mounjaro 7.5mg Kwikpen", price: 930000 },
+    { name: "Mounjaro 10mg Kwikpen", price: 1100000 }, { name: "Mounjaro 10mg (4 pens)", price: 1600000 },
+    { name: "Mounjaro 12.5mg", price: 1220000 }, { name: "Mounjaro 15mg", price: 1300000 },
+    { name: "Ondansetron IM", price: 25000 }, { name: "Tirzepatide 2.5-5mg (shot)", price: 215000 },
+    { name: "Tirzepatide 7.5mg (shot)", price: 230000 }, { name: "Tirzepatide 10mg (shot)", price: 245000 },
+    { name: "Tirzepatide 12.5mg (shot)", price: 260000 }, { name: "Tirzepatide 15mg (shot)", price: 260000 },
+    { name: "Tirzepatide Level One (2.5-5mg weekly, 4 inj)", price: 820000 }, { name: "Tirzepatide Level Two (7.5mg weekly, 4 inj)", price: 880000 },
+    { name: "Tirzepatide Level Three (10mg weekly, 4 inj)", price: 940000 }, { name: "Tirzepatide Level Four (12.5mg weekly, 4 inj)", price: 940000 },
+    { name: "Tirzepatide Level Five (15mg weekly, 4 inj)", price: 1000000 },
+  ],
+  "Mesotherapy": [
+    { name: "Armpit Bulge", price: 40000 }, { name: "Cheek Fat", price: 40000 }, { name: "Double Chin", price: 50000 },
+    { name: "Under Arms", price: 80000 }, { name: "Love Handles", price: 60000 }, { name: "Abdomen", price: 80000 },
+    { name: "Back Roll (1st roll)", price: 60000 }, { name: "Additional Roll", price: 20000 }, { name: "Additional Bottle", price: 20000 },
+  ],
+  "Mesotherapy (Lemon Bottle)": [
+    { name: "Armpit Bulge (LB)", price: 50000 }, { name: "Cheek Fat (LB)", price: 60000 }, { name: "Double Chin (LB)", price: 75000 },
+    { name: "Under Arms (LB)", price: 140000 }, { name: "Love Handles (LB)", price: 100000 }, { name: "Abdomen (LB)", price: 135000 },
+    { name: "Back Roll 1st (LB)", price: 100000 }, { name: "Additional Roll (LB)", price: 30000 }, { name: "Additional Bottle (LB)", price: 30000 },
+  ],
+  "Fillers": [
+    { name: "Dermal Filler Package 2ml", price: 310000 }, { name: "Dermal Filler Package 3ml", price: 500000 },
+    { name: "Dermal Filler Package 4ml", price: 650000 }, { name: "Dermal Filler Package 5ml", price: 810000 },
+    { name: "Nasolabial Folds 1ml", price: 150000 }, { name: "Nasolabial Folds 2ml", price: 290000 },
+    { name: "Chin Enhancement 1ml", price: 150000 }, { name: "Chin Enhancement 2ml", price: 290000 },
+    { name: "Non-Surgical Nose Job", price: 150000 }, { name: "Non-Surgical Nose Job + Lip Combo", price: 290000 },
+    { name: "Tear Troughs (Sunken Eyes)", price: 180000 }, { name: "Lip Enhancement", price: 150000 },
+    { name: "Filler Dissolving (starts at)", price: 30000 }, { name: "Injection of Outside Fillers", price: 40000 },
+    { name: "Injection of New Area at Follow Up", price: 40000 },
+  ],
+  "Liquid BBL": [
+    { name: "Liquid BBL 200ml", price: 900000 }, { name: "Liquid BBL 400ml", price: 1500000 },
+    { name: "Liquid BBL 600ml + Hip Dip Special", price: 2000000 },
+  ],
+  "Botox – Anti-Aging": [
+    { name: "Forehead Lines", price: 150000 },
+    { name: "Frown Lines (11s / Glabellar)", price: 150000 },
+    { name: "Crow's Feet", price: 130000 },
+    { name: "Brow Lift", price: 80000 },
+    { name: "Bunny Lines", price: 80000 },
+    { name: "Lip Flip", price: 70000 },
+    { name: "Chin Dimpling", price: 80000 },
+    { name: "Neck / Nefertiti Lift", price: 220000 },
+    { name: "Full Upper Face", price: 320000 },
+  ],
+  "Botox – Facial Contouring": [
+    { name: "Gummy Smile", price: 70000 },
+    { name: "Nose Tip Lift", price: 65000 },
+    { name: "Masseter / Jawline Slimming 50 units", price: 270000 },
+    { name: "Masseter / Jawline Slimming 100 units", price: 470000 },
+    { name: "Masseter Touch-Up", price: 120000 },
+  ],
+  "Botox – Therapeutic": [
+    { name: "Hyperhidrosis – Underarms", price: 270000 },
+    { name: "Hyperhidrosis – Palms", price: 420000 },
+    { name: "TMJ / Bruxism", price: 270000 },
+  ],
+  "Botox – Body": [
+    { name: "Trap Tox / Shoulder Slimming", price: 420000 },
+  ],
+  "Botox – Add-On": [
+    { name: "Additional Units (per unit)", price: 8000 },
+  ],
+  "Body Sculpting & Sauna": [
+    { name: "Baddie Sculpting 1hr Session", price: 45000 }, { name: "Baddie Sculpting + Sauna Blanket", price: 55000 },
+    { name: "Sauna Blanket 30 mins", price: 20000 }, { name: "Sauna Blanket 1 hour", price: 35000 }, { name: "Sauna Blanket 1hr 30 mins", price: 45000 },
+  ],
+  "Other Services": [
+    { name: "Post-OP Lymphatic Drainage Massage", price: 45000 }, { name: "The Cookie Reset Vaginal Rejuvenation", price: 75000 },
+    { name: "Teeth Whitening - Gold", price: 40000 }, { name: "Teeth Whitening - Diamond", price: 50000 },
+    { name: "Numbing Cream (per area)", price: 10000 }, { name: "VIP Room - Single Person", price: 15000 }, { name: "VIP Room - Couple", price: 25000 },
+  ],
+  "Home Service": [
+    { name: "Home Service - Within Lekki Phase 1", price: 50000 }, { name: "Home Service - Within the Island", price: 100000 }, { name: "Home Service - Mainland", price: 200000 },
+  ],
+  "Facials (Intro Pricing)": [
+    { name: "Routine Facial 60 mins (Intro)", price: 32000 }, { name: "Acne Facial 60 mins (Intro)", price: 38000 },
+    { name: "Vitamin C Facial 60 mins (Intro)", price: 38000 }, { name: "Brightening Facial 75 mins (Intro)", price: 48000 },
+    { name: "Microdermabrasion Facial 60 mins (Intro)", price: 34000 }, { name: "Dermaplaning Standalone 30 mins (Intro)", price: 28000 },
+    { name: "Gentleman's Facial 60 mins (Intro)", price: 40000 }, { name: "Dermaplaning Add-On (Intro)", price: 10000 },
+  ],
+  "Facials (Regular Pricing)": [
+    { name: "Routine Facial 60 mins", price: 40000 }, { name: "Acne Facial 60 mins", price: 48000 },
+    { name: "Vitamin C Facial 60 mins", price: 48000 }, { name: "Brightening Facial 75 mins", price: 60000 },
+    { name: "Microdermabrasion Facial 60 mins", price: 42000 }, { name: "Dermaplaning Standalone 30 mins", price: 45000 },
+    { name: "Gentleman's Facial 60 mins", price: 49000 }, { name: "Dermaplaning Add-On", price: 20000 },
+  ],
+  "Massage (Intro Pricing)": [
+    { name: "Swedish Massage - Back Only 30 mins (Intro)", price: 25000 }, { name: "Swedish Massage - Full Body 60 mins (Intro)", price: 35000 },
+    { name: "Swedish Massage - Full Body 90 mins (Intro)", price: 50000 }, { name: "Deep Tissue - Back Only 30 mins (Intro)", price: 30000 },
+    { name: "Deep Tissue - Full Body 60 mins (Intro)", price: 40000 }, { name: "Deep Tissue - Full Body 90 mins (Intro)", price: 55000 },
+    { name: "Head, Neck & Shoulder 30 mins (Intro)", price: 25000 }, { name: "Head, Neck & Shoulder 45 mins (Intro)", price: 30000 },
+    { name: "Head, Neck & Shoulder 60 mins (Intro)", price: 40000 }, { name: "Hand Massage 30 mins (Intro)", price: 10000 },
+    { name: "Foot & Leg Massage 30 mins (Intro)", price: 25000 }, { name: "Foot & Leg Massage 45 mins (Intro)", price: 35000 },
+    { name: "Every 10 Minute Increment (Intro)", price: 10000 },
+  ],
+  "Massage (Regular Pricing)": [
+    { name: "Swedish Massage - Back Only 30 mins", price: 40000 }, { name: "Swedish Massage - Full Body 60 mins", price: 50000 },
+    { name: "Swedish Massage - Full Body 90 mins", price: 70000 }, { name: "Deep Tissue - Back Only 30 mins", price: 45000 },
+    { name: "Deep Tissue - Full Body 60 mins", price: 60000 }, { name: "Deep Tissue - Full Body 90 mins", price: 80000 },
+    { name: "Head, Neck & Shoulder 30 mins", price: 40000 }, { name: "Head, Neck & Shoulder 45 mins", price: 50000 },
+    { name: "Head, Neck & Shoulder 60 mins", price: 65000 }, { name: "Hand Massage 30 mins", price: 20000 },
+    { name: "Foot & Leg Massage 30 mins", price: 35000 }, { name: "Foot & Leg Massage 45 mins", price: 45000 },
+    { name: "Every 10 Minute Increment", price: 10000 },
+  ],
+  "Laser - Women (Intro)": [
+    { name: "Upper Lip (W-Intro)", price: 18000 }, { name: "Chin (W-Intro)", price: 30000 }, { name: "Chin + Upper Lip (W-Intro)", price: 45000 },
+    { name: "Cheeks (W-Intro)", price: 30000 }, { name: "Sideburns (W-Intro)", price: 30000 }, { name: "Neck Front (W-Intro)", price: 30000 },
+    { name: "Full Face (W-Intro)", price: 103000 }, { name: "Underarms (W-Intro)", price: 45000 }, { name: "Half Arms (W-Intro)", price: 65000 },
+    { name: "Full Arms (W-Intro)", price: 85000 }, { name: "Bikini Line (W-Intro)", price: 45000 }, { name: "Brazilian Full (W-Intro)", price: 75000 },
+    { name: "Buttocks/Perianal Add-On (W-Intro)", price: 45000 }, { name: "Chest (W-Intro)", price: 50000 }, { name: "Abdomen (W-Intro)", price: 45000 },
+    { name: "Full Back (W-Intro)", price: 65000 }, { name: "Back + Shoulders (W-Intro)", price: 95000 }, { name: "Half Legs (W-Intro)", price: 60000 },
+    { name: "Full Legs (W-Intro)", price: 85000 }, { name: "Full Body (W-Intro)", price: 275000 },
+  ],
+  "Laser - Women (Standard)": [
+    { name: "Upper Lip (W-Std)", price: 25000 }, { name: "Chin (W-Std)", price: 45000 }, { name: "Chin + Upper Lip (W-Std)", price: 70000 },
+    { name: "Cheeks (W-Std)", price: 45000 }, { name: "Sideburns (W-Std)", price: 45000 }, { name: "Neck Front (W-Std)", price: 45000 },
+    { name: "Full Face (W-Std)", price: 155000 }, { name: "Underarms (W-Std)", price: 75000 }, { name: "Half Arms (W-Std)", price: 90000 },
+    { name: "Full Arms (W-Std)", price: 120000 }, { name: "Bikini Line (W-Std)", price: 75000 }, { name: "Brazilian Full (W-Std)", price: 115000 },
+    { name: "Buttocks/Perianal Add-On (W-Std)", price: 60000 }, { name: "Chest (W-Std)", price: 75000 }, { name: "Abdomen (W-Std)", price: 60000 },
+    { name: "Full Back (W-Std)", price: 95000 }, { name: "Back + Shoulders (W-Std)", price: 125000 }, { name: "Half Legs (W-Std)", price: 85000 },
+    { name: "Full Legs (W-Std)", price: 120000 }, { name: "Full Body (W-Std)", price: 395000 },
+  ],
+  "Laser - Men (Intro)": [
+    { name: "Upper Lip (M-Intro)", price: 25000 }, { name: "Chin (M-Intro)", price: 40000 }, { name: "Chin + Upper Lip (M-Intro)", price: 60000 },
+    { name: "Cheeks (M-Intro)", price: 40000 }, { name: "Sideburns (M-Intro)", price: 40000 }, { name: "Neck Front (M-Intro)", price: 45000 },
+    { name: "Full Face (M-Intro)", price: 140000 }, { name: "Beard / Jawline (M-Intro)", price: 85000 }, { name: "Underarms (M-Intro)", price: 65000 },
+    { name: "Half Arms (M-Intro)", price: 85000 }, { name: "Full Arms (M-Intro)", price: 110000 }, { name: "Buttocks/Perianal Add-On (M-Intro)", price: 55000 },
+    { name: "Chest (M-Intro)", price: 65000 }, { name: "Abdomen (M-Intro)", price: 60000 }, { name: "Full Back (M-Intro)", price: 85000 },
+    { name: "Back + Shoulders (M-Intro)", price: 120000 }, { name: "Half Legs (M-Intro)", price: 85000 }, { name: "Full Legs (M-Intro)", price: 110000 },
+    { name: "Full Body (M-Intro)", price: 325000 },
+  ],
+  "Laser - Men (Standard)": [
+    { name: "Upper Lip (M-Std)", price: 35000 }, { name: "Chin (M-Std)", price: 55000 }, { name: "Chin + Upper Lip (M-Std)", price: 85000 },
+    { name: "Cheeks (M-Std)", price: 55000 }, { name: "Sideburns (M-Std)", price: 55000 }, { name: "Neck Front (M-Std)", price: 60000 },
+    { name: "Full Face (M-Std)", price: 195000 }, { name: "Beard / Jawline (M-Std)", price: 120000 }, { name: "Underarms (M-Std)", price: 95000 },
+    { name: "Half Arms (M-Std)", price: 115000 }, { name: "Full Arms (M-Std)", price: 150000 }, { name: "Buttocks/Perianal Add-On (M-Std)", price: 70000 },
+    { name: "Chest (M-Std)", price: 95000 }, { name: "Abdomen (M-Std)", price: 75000 }, { name: "Full Back (M-Std)", price: 120000 },
+    { name: "Back + Shoulders (M-Std)", price: 155000 }, { name: "Half Legs (M-Std)", price: 110000 }, { name: "Full Legs (M-Std)", price: 155000 },
+    { name: "Full Body (M-Std)", price: 465000 },
+  ],
+};
+
+const ADMIN_PASSWORD = "TBL@2025";
+const PINK = "#f3c2d7";
+const VAT_RATE = 0.075;
+const fmt = n => "₦" + Math.max(0, Number(n)).toLocaleString("en-NG", { minimumFractionDigits: 2 });
+const clone = o => JSON.parse(JSON.stringify(o));
+
+function sortedAlpha(data) {
+  const cats = Object.keys(data).sort((a, b) => a.localeCompare(b));
+  const out = {};
+  cats.forEach(cat => { out[cat] = [...data[cat]].sort((a, b) => a.name.localeCompare(b.name)); });
+  return out;
+}
+
+function buildFromStored(stored) {
+  if (!stored) return sortedAlpha(clone(DEFAULT_SERVICES));
+  const out = {};
+  const order = stored.categories || Object.keys(DEFAULT_SERVICES);
+  // Load stored categories
+  order.forEach(cat => {
+    const s = stored.services && stored.services[cat];
+    const defs = DEFAULT_SERVICES[cat] || [];
+    if (s && Array.isArray(s)) {
+      out[cat] = s.map(si => {
+        const def = defs.find(d => d.name === si.name);
+        return def ? { ...def, price: Number(si.price) || 0 } : { name: si.name, price: Number(si.price) || 0 };
+      });
+    } else { out[cat] = clone(defs); }
+  });
+  // Merge in any new default categories not yet in storage
+  Object.keys(DEFAULT_SERVICES).forEach(cat => {
+    if (!out[cat]) out[cat] = clone(DEFAULT_SERVICES[cat]);
+  });
+  return sortedAlpha(out);
+}
+
+function serialize(catOrder, prices) {
+  const svcs = {};
+  catOrder.forEach(cat => { svcs[cat] = (prices[cat] || []).map(({ name, price }) => ({ name, price })); });
+  return JSON.stringify({ categories: catOrder, services: svcs });
+}
+
+function App() {
+  const [services, setServices] = useState(null);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState({});
+  const [openCat, setOpenCat] = useState(null);
+  const [activeTab, setActiveTab] = useState("select");
+  const [discounts, setDiscounts] = useState([{ id: 1, value: "", type: "naira" }]);
+  const [suppressConsult, setSuppressConsult] = useState(false);
+  const [showBackTop, setShowBackTop] = useState(false);
+  // Admin
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showPw, setShowPw] = useState(false);
+  const [pwInput, setPwInput] = useState("");
+  const [pwError, setPwError] = useState("");
+  const [editData, setEditData] = useState(null);
+  const [editOpenCat, setEditOpenCat] = useState(null);
+  const [adminSearch, setAdminSearch] = useState("");
+  const [saveStatus, setSaveStatus] = useState("");
+  const [showReset, setShowReset] = useState(false);
+  const [addForm, setAddForm] = useState(null);
+  // Add / delete category
+  const [showAddCat, setShowAddCat] = useState(false);
+  const [newCatName, setNewCatName] = useState("");
+  const [deleteCatTarget, setDeleteCatTarget] = useState(null);
+  // Bulk add
+  const [showBulkAdd, setShowBulkAdd] = useState(false);
+  const [bulkCat, setBulkCat] = useState("");
+  const [bulkNewCat, setBulkNewCat] = useState("");
+  const [bulkRows, setBulkRows] = useState([{ id: 1, name: "", price: "" }]);
+  // Bulk edit
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [bulkEditCat, setBulkEditCat] = useState("");
+  const [bulkEditRows, setBulkEditRows] = useState([]);
+
+  // Load prices
+  const seededRef = React.useRef(false);
+
+  const load = async () => {
+    // Step 1: Load from localStorage immediately — this NEVER gets wiped
+    const localCache = localStorage.getItem(CACHE_KEY);
+    if (localCache) {
+      try { setServices(buildFromStored(JSON.parse(localCache))); } catch(e) {}
+    }
+
+    // Step 2: Try Firestore to get the latest (for cross-device sync)
+    try {
+      const val = await fsGet();
+      if (val) {
+        // Firestore has data — update localStorage and display
+        localStorage.setItem(CACHE_KEY, val);
+        try { setServices(buildFromStored(JSON.parse(val))); } catch(e) {}
+      } else if (!localCache && !seededRef.current) {
+        // Nothing anywhere — first ever load, seed with defaults
+        seededRef.current = true;
+        const fresh = sortedAlpha(clone(DEFAULT_SERVICES));
+        const payload = serialize(Object.keys(fresh), fresh);
+        localStorage.setItem(CACHE_KEY, payload);
+        try { await fsSet(payload); } catch(e) {}
+        setServices(fresh);
+      }
+      // If Firestore returns null but localStorage has data → keep localStorage, do NOT wipe
+    } catch(e) {
+      // Firestore failed — localStorage already loaded above, just ensure services is set
+      if (!localCache) setServices(sortedAlpha(clone(DEFAULT_SERVICES)));
+    }
+  };
+
+  useEffect(() => {
+    load();
+    const onVis = () => { if (!document.hidden) load(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
+
+  useEffect(() => {
+    const fn = () => setShowBackTop(window.scrollY > 300);
+    window.addEventListener("scroll", fn);
+    return () => window.removeEventListener("scroll", fn);
+  }, []);
+
+  useEffect(() => {
+    if (!services) return;
+    const has = Object.keys(selected).some(key => {
+      const [cat, idx] = key.split("|||");
+      return services[cat]?.[Number(idx)]?.autoDiscount;
+    });
+    if (!has) setSuppressConsult(false);
+  }, [selected, services]);
+
+  // Bulk edit: reload rows when category changes
+  useEffect(() => {
+    if (!showBulkEdit || !editData) return;
+    const items = editData.prices[bulkEditCat] || [];
+    setBulkEditRows(items.map((s, i) => ({ id: i, name: s.name, price: s.price })));
+  }, [bulkEditCat, showBulkEdit]);
+
+  const toggleCat = cat => setOpenCat(p => p === cat ? null : cat);
+  const toggleSvc = (cat, idx) => {
+    const key = `${cat}|||${idx}`;
+    setSelected(p => { const n = { ...p }; n[key] ? delete n[key] : (n[key] = { cat, idx, qty: 1 }); return n; });
+  };
+  const updateQty = (key, d) => setSelected(p => {
+    const n = { ...p }; if (!n[key]) return n;
+    const q = n[key].qty + d;
+    if (q <= 0) delete n[key]; else n[key] = { ...n[key], qty: q }; return n;
+  });
+
+  const selItems = useMemo(() =>
+    !services ? [] : Object.entries(selected).map(([key, { cat, idx, qty }]) => ({
+      key, cat, qty, service: services[cat]?.[idx]
+    })).filter(x => x.service), [selected, services]);
+
+  const subtotal = selItems.reduce((s, { service, qty }) => s + service.price * qty, 0);
+  const hasNonConsult = selItems.some(({ service }) => !service.isConsultation);
+  const hasAutoDiscount = selItems.some(({ service }) => service.autoDiscount);
+  const consultDisc = (!suppressConsult && hasNonConsult)
+    ? selItems.reduce((s, { service, qty }) => s + (service.autoDiscount || 0) * qty, 0) : 0;
+  const manualDisc = discounts.reduce((s, d) => {
+    const v = parseFloat(d.value.replace(/[^0-9.]/g, "")) || 0;
+    return s + (d.type === "percent" ? Math.round((v / 100) * subtotal) : v);
+  }, 0);
+  const totalDisc = consultDisc + manualDisc;
+  const discountedSubtotal = Math.max(0, subtotal - totalDisc);
+  const vat = Math.round(discountedSubtotal * VAT_RATE);
+  const finalTotal = discountedSubtotal + vat;
+
+  const clearAll = () => { setSelected({}); setSearch(""); setDiscounts([{ id: 1, value: "", type: "naira" }]); setSuppressConsult(false); };
+  const addDiscount = () => setDiscounts(p => [...p, { id: Date.now(), value: "", type: "naira" }]);
+  const removeDiscount = id => setDiscounts(p => p.filter(d => d.id !== id));
+  const updateDiscount = (id, f, v) => setDiscounts(p => p.map(d => d.id === id ? { ...d, [f]: v, ...(f === "type" ? { value: "" } : {}) } : d));
+
+  const filteredSvcs = useMemo(() => {
+    if (!services || !search.trim()) return null;
+    const q = search.toLowerCase();
+    const res = [];
+    Object.entries(services).forEach(([cat, items]) =>
+      items.forEach((s, idx) => s.name.toLowerCase().includes(q) && res.push({ cat, idx, service: s })));
+    return res;
+  }, [search, services]);
+
+  // Admin
+  const handleLock = () => {
+    if (isAdmin) { setIsAdmin(false); setEditData(null); setAdminSearch(""); setAddForm(null); setActiveTab("select"); }
+    else { setPwInput(""); setPwError(""); setShowPw(true); }
+  };
+  const handlePwSubmit = () => {
+    if (pwInput === ADMIN_PASSWORD) {
+      setIsAdmin(true); setShowPw(false); setPwInput(""); setPwError("");
+      const sorted = sortedAlpha(services);
+      setEditData({ catOrder: Object.keys(sorted), prices: sorted });
+      setActiveTab("admin");
+    } else { setPwError("Incorrect password."); }
+  };
+
+  const setPrice = (cat, idx, val) => setEditData(p => { const n = clone(p); n.prices[cat][idx].price = val; return n; });
+  const deleteSvc = (cat, idx) => setEditData(p => { const n = clone(p); n.prices[cat].splice(idx, 1); return n; });
+  const addSvc = (cat) => {
+    if (!addForm || addForm.cat !== cat || !addForm.name.trim()) return;
+    const price = parseInt(String(addForm.price).replace(/[^0-9]/g, ""), 10) || 0;
+    setEditData(p => {
+      const n = clone(p);
+      if (!n.prices[cat]) n.prices[cat] = [];
+      n.prices[cat].push({ name: addForm.name.trim(), price });
+      n.prices[cat].sort((a, b) => a.name.localeCompare(b.name));
+      return n;
+    });
+    setAddForm(null);
+  };
+  const moveCat = (idx, dir) => setEditData(p => {
+    const n = clone(p); const o = [...n.catOrder]; const t = idx + dir;
+    if (t < 0 || t >= o.length) return p;
+    [o[idx], o[t]] = [o[t], o[idx]]; return { ...n, catOrder: o };
+  });
+  const sortAlpha = () => setEditData(p => {
+    const cats = [...p.catOrder].sort((a, b) => a.localeCompare(b));
+    const prices = {};
+    cats.forEach(cat => { prices[cat] = [...(p.prices[cat] || [])].sort((a, b) => a.name.localeCompare(b.name)); });
+    return { catOrder: cats, prices };
+  });
+
+  // Add category
+  const handleAddCat = () => {
+    const name = newCatName.trim();
+    if (!name || editData.catOrder.includes(name)) return;
+    setEditData(p => {
+      const n = clone(p);
+      n.catOrder = [...n.catOrder, name].sort((a, b) => a.localeCompare(b));
+      n.prices[name] = [];
+      return n;
+    });
+    setNewCatName(""); setShowAddCat(false); setEditOpenCat(name);
+  };
+
+  // Delete category
+  const handleDeleteCat = (cat) => {
+    setEditData(p => { const n = clone(p); n.catOrder = n.catOrder.filter(c => c !== cat); delete n.prices[cat]; return n; });
+    setDeleteCatTarget(null);
+    if (editOpenCat === cat) setEditOpenCat(null);
+  };
+
+  // Bulk add
+  const openBulkAdd = () => { setBulkCat(editData?.catOrder[0] || ""); setBulkNewCat(""); setBulkRows([{ id: 1, name: "", price: "" }]); setShowBulkAdd(true); };
+  const addBulkRow = () => setBulkRows(p => [...p, { id: Date.now(), name: "", price: "" }]);
+  const removeBulkRow = id => setBulkRows(p => p.filter(r => r.id !== id));
+  const updateBulkRow = (id, f, v) => setBulkRows(p => p.map(r => r.id === id ? { ...r, [f]: v } : r));
+  const saveBulkAdd = () => {
+    const targetCat = bulkCat === "__new__" ? bulkNewCat.trim() : bulkCat;
+    if (!targetCat) return;
+    const valid = bulkRows.filter(r => r.name.trim());
+    if (!valid.length) return;
+    setEditData(p => {
+      const n = clone(p);
+      if (!n.prices[targetCat]) { n.prices[targetCat] = []; n.catOrder = [...n.catOrder, targetCat].sort((a, b) => a.localeCompare(b)); }
+      valid.forEach(r => n.prices[targetCat].push({ name: r.name.trim(), price: parseInt(String(r.price).replace(/[^0-9]/g, ""), 10) || 0 }));
+      n.prices[targetCat].sort((a, b) => a.name.localeCompare(b.name));
+      return n;
+    });
+    setShowBulkAdd(false);
+  };
+
+  // Bulk edit
+  const openBulkEdit = (cat) => {
+    const c = cat || editData?.catOrder[0] || "";
+    setBulkEditCat(c);
+    const items = editData?.prices[c] || [];
+    setBulkEditRows(items.map((s, i) => ({ id: i, name: s.name, price: s.price })));
+    setShowBulkEdit(true);
+  };
+  const updateBulkEditRow = (id, f, v) => setBulkEditRows(p => p.map(r => r.id === id ? { ...r, [f]: v } : r));
+  const removeBulkEditRow = id => setBulkEditRows(p => p.filter(r => r.id !== id));
+  const saveBulkEdit = () => {
+    const cat = bulkEditCat;
+    setEditData(p => {
+      const n = clone(p);
+      n.prices[cat] = bulkEditRows.filter(r => r.name.trim()).map(r => {
+        const def = DEFAULT_SERVICES[cat]?.find(d => d.name === r.name);
+        return def ? { ...def, price: parseInt(String(r.price).replace(/[^0-9]/g, ""), 10) || 0 }
+          : { name: r.name.trim(), price: parseInt(String(r.price).replace(/[^0-9]/g, ""), 10) || 0 };
+      }).sort((a, b) => a.name.localeCompare(b.name));
+      return n;
+    });
+    setShowBulkEdit(false);
+  };
+
+  // Save
+  const handleSave = async () => {
+    if (!editData) return;
+    setSaveStatus("saving");
+    const final = {}, storage = {};
+    editData.catOrder.forEach(cat => {
+      final[cat] = (editData.prices[cat] || []).map(item => ({ ...item, price: parseInt(String(item.price).replace(/[^0-9]/g, ""), 10) || 0 }));
+      storage[cat] = final[cat].map(({ name, price }) => ({ name, price }));
+    });
+    const payload = serialize(editData.catOrder, final);
+
+    // Save to localStorage first (protects this device)
+    localStorage.setItem(CACHE_KEY, payload);
+    setServices(final);
+    setEditData({ catOrder: [...editData.catOrder], prices: clone(final) });
+
+    // Sync to Firestore (required for other devices to see changes)
+    try {
+      await fsSet(payload);
+      setSaveStatus("saved");
+    } catch(e) {
+      setSaveStatus("error");
+      alert("⚠️ Saved on this device only.\n\nFirestore sync failed — other devices will NOT see this update.\n\nError: " + e.message + "\n\nFix: Go to Firebase Console → Firestore → Rules and publish open read/write rules.");
+    }
+    setTimeout(() => setSaveStatus(""), 4000);
+  };
+
+  const handleReset = async () => {
+    const fresh = sortedAlpha(clone(DEFAULT_SERVICES));
+    const payload = serialize(Object.keys(fresh), fresh);
+    localStorage.setItem(CACHE_KEY, payload);
+    setServices(fresh);
+    setEditData({ catOrder: Object.keys(fresh), prices: clone(fresh) });
+    setShowReset(false);
+    setSaveStatus("saved");
+    try { await fsSet(payload); } catch(e) {}
+    setTimeout(() => setSaveStatus(""), 4000);
+  };
+
+  const H = 63;
+  const b = { fontFamily: "inherit", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" };
+  const modalBg = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 };
+  const modalBox = { background: "#111", border: "1px solid rgba(243,194,215,0.25)", borderRadius: 16, padding: 28, width: "100%", maxWidth: 500, maxHeight: "85vh", overflowY: "auto" };
+
+  if (!services) return (
+    <div style={{ fontFamily: "'Poppins',sans-serif", minHeight: "100vh", background: "#000", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 18 }}>
+      <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
+      <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 22, color: PINK, letterSpacing: 2 }}>THE BADDIE LAB</div>
+      <div style={{ width: 28, height: 28, border: "2px solid rgba(243,194,215,0.2)", borderTopColor: PINK, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+      <div style={{ fontSize: 11, color: "#555", letterSpacing: 2, textTransform: "uppercase" }}>Loading prices…</div>
+    </div>
+  );
+
+  return (
+    <div style={{ fontFamily: "'Poppins',sans-serif", fontWeight: 500, minHeight: "100vh", background: "#000", color: "#fff" }}>
+      <style>{`
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-thumb { background: #f3c2d7; border-radius: 2px; }
+        .ch:hover { background: rgba(243,194,215,0.09) !important; }
+        .sr:hover { background: rgba(243,194,215,0.06) !important; }
+        input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+        input::placeholder, textarea::placeholder { color: #555; }
+        .fi:focus { border-color: #f3c2d7 !important; outline: none; }
+        .mb:hover:not(:disabled) { background: rgba(243,194,215,0.12) !important; }
+        .db:hover { background: rgba(255,80,80,0.18) !important; color: #ff7070 !important; }
+        .bt:hover { background: #f3c2d7 !important; color: #000 !important; }
+        select { -webkit-appearance: none; }
+      `}</style>
+
+      {/* HEADER */}
+      <div style={{ background: "#000", borderBottom: "1px solid rgba(243,194,215,0.3)", padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100, gap: 8 }}>
+        <div style={{ flexShrink: 0 }}>
+          <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 19, color: PINK, letterSpacing: 1 }}>THE BADDIE LAB</div>
+          <div style={{ fontSize: 8, color: "#555", letterSpacing: 2, textTransform: "uppercase", marginTop: 1 }}>Service Price Calculator · Updated 28 Mar 2026</div>
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {["select", "checkout", ...(isAdmin ? ["admin"] : [])].map(t => (
+            <button key={t} onClick={() => setActiveTab(t)} style={{ ...b, padding: "7px 13px", borderRadius: 20, border: "1px solid", fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", whiteSpace: "nowrap", background: activeTab === t ? (t === "admin" ? "#c0392b" : PINK) : "transparent", borderColor: activeTab === t ? (t === "admin" ? "#c0392b" : PINK) : (t === "admin" ? "#c0392b" : "#333"), color: activeTab === t ? "#000" : (t === "admin" ? "#c0392b" : "#888") }}>
+              {t === "checkout" ? `Bill (${selItems.length})` : t === "admin" ? "Prices" : "Services"}
+            </button>
+          ))}
+          <button onClick={handleLock} style={{ ...b, flexShrink: 0, width: 34, height: 34, borderRadius: "50%", border: `1.5px solid ${isAdmin ? "#c0392b" : "rgba(243,194,215,0.45)"}`, background: isAdmin ? "rgba(192,57,43,0.15)" : "rgba(243,194,215,0.07)", color: isAdmin ? "#c0392b" : PINK, fontSize: 14 }}>
+            {isAdmin ? "🔓" : "🔒"}
+          </button>
+        </div>
+      </div>
+
+      {/* PASSWORD MODAL */}
+      {showPw && (
+        <div style={modalBg} onClick={() => { setShowPw(false); setPwInput(""); setPwError(""); }}>
+          <div onClick={e => e.stopPropagation()} style={{ ...modalBox, maxWidth: 360 }}>
+            <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 20, color: PINK, marginBottom: 6 }}>Admin Access</div>
+            <div style={{ fontSize: 12, color: "#555", marginBottom: 20 }}>Enter the admin password to edit service prices.</div>
+            <input type="password" autoFocus value={pwInput} onChange={e => { setPwInput(e.target.value); setPwError(""); }} onKeyDown={e => e.key === "Enter" && handlePwSubmit()} placeholder="Password" className="fi"
+              style={{ width: "100%", padding: "12px 14px", background: "#000", border: `1px solid ${pwError ? "#c0392b" : "#2a2a2a"}`, borderRadius: 8, color: "#fff", fontSize: 14, fontFamily: "inherit", marginBottom: pwError ? 6 : 16 }} />
+            {pwError && <div style={{ fontSize: 12, color: "#c0392b", marginBottom: 12 }}>{pwError}</div>}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => { setShowPw(false); setPwInput(""); setPwError(""); }} style={{ ...b, flex: 1, padding: 11, background: "transparent", border: "1px solid #333", borderRadius: 8, color: "#888", fontSize: 13 }}>Cancel</button>
+              <button onClick={handlePwSubmit} style={{ ...b, flex: 2, padding: 11, background: PINK, border: "none", borderRadius: 8, color: "#000", fontSize: 13, fontWeight: 700 }}>Unlock</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* RESET CONFIRM */}
+      {showReset && (
+        <div style={modalBg} onClick={() => setShowReset(false)}>
+          <div onClick={e => e.stopPropagation()} style={{ ...modalBox, maxWidth: 360, border: "1px solid rgba(192,57,43,0.4)" }}>
+            <div style={{ fontSize: 16, color: "#fff", marginBottom: 10, fontWeight: 600 }}>Reset all prices?</div>
+            <div style={{ fontSize: 13, color: "#888", marginBottom: 24 }}>Restores every service and price to original defaults. Cannot be undone.</div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setShowReset(false)} style={{ ...b, flex: 1, padding: 11, background: "transparent", border: "1px solid #333", borderRadius: 8, color: "#888", fontSize: 13 }}>Cancel</button>
+              <button onClick={handleReset} style={{ ...b, flex: 2, padding: 11, background: "#c0392b", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700 }}>Yes, Reset All</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DELETE CATEGORY CONFIRM */}
+      {deleteCatTarget && (
+        <div style={modalBg} onClick={() => setDeleteCatTarget(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ ...modalBox, maxWidth: 360, border: "1px solid rgba(192,57,43,0.4)" }}>
+            <div style={{ fontSize: 16, color: "#fff", marginBottom: 10, fontWeight: 600 }}>Delete "{deleteCatTarget}"?</div>
+            <div style={{ fontSize: 13, color: "#888", marginBottom: 24 }}>Removes the category and all {editData?.prices[deleteCatTarget]?.length || 0} services in it.</div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setDeleteCatTarget(null)} style={{ ...b, flex: 1, padding: 11, background: "transparent", border: "1px solid #333", borderRadius: 8, color: "#888", fontSize: 13 }}>Cancel</button>
+              <button onClick={() => handleDeleteCat(deleteCatTarget)} style={{ ...b, flex: 2, padding: 11, background: "#c0392b", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700 }}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADD CATEGORY */}
+      {showAddCat && (
+        <div style={modalBg} onClick={() => setShowAddCat(false)}>
+          <div onClick={e => e.stopPropagation()} style={{ ...modalBox, maxWidth: 380 }}>
+            <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 20, color: PINK, marginBottom: 16 }}>Add New Category</div>
+            <input autoFocus className="fi" placeholder="Category name…" value={newCatName} onChange={e => setNewCatName(e.target.value)} onKeyDown={e => e.key === "Enter" && handleAddCat()}
+              style={{ width: "100%", padding: "12px 14px", background: "#000", border: "1px solid #2a2a2a", borderRadius: 8, color: "#fff", fontSize: 14, fontFamily: "inherit", marginBottom: 16 }} />
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setShowAddCat(false)} style={{ ...b, flex: 1, padding: 11, background: "transparent", border: "1px solid #333", borderRadius: 8, color: "#888", fontSize: 13 }}>Cancel</button>
+              <button onClick={handleAddCat} style={{ ...b, flex: 2, padding: 11, background: PINK, border: "none", borderRadius: 8, color: "#000", fontSize: 13, fontWeight: 700 }}>Add Category</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BULK ADD */}
+      {showBulkAdd && (
+        <div style={modalBg} onClick={() => setShowBulkAdd(false)}>
+          <div onClick={e => e.stopPropagation()} style={modalBox}>
+            <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 20, color: PINK, marginBottom: 6 }}>Bulk Add Services</div>
+            <div style={{ fontSize: 12, color: "#555", marginBottom: 18 }}>Add multiple services to a category at once.</div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, color: "#666", letterSpacing: 1, textTransform: "uppercase", marginBottom: 7 }}>Category</div>
+              <select value={bulkCat} onChange={e => setBulkCat(e.target.value)} className="fi"
+                style={{ width: "100%", padding: "11px 14px", background: "#000", border: "1px solid #2a2a2a", borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "inherit" }}>
+                {editData?.catOrder.map(c => <option key={c} value={c}>{c}</option>)}
+                <option value="__new__">+ Create New Category</option>
+              </select>
+            </div>
+            {bulkCat === "__new__" && (
+              <input autoFocus className="fi" placeholder="New category name…" value={bulkNewCat} onChange={e => setBulkNewCat(e.target.value)}
+                style={{ width: "100%", padding: "11px 14px", background: "#000", border: "1px solid #2a2a2a", borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "inherit", marginBottom: 14 }} />
+            )}
+            <div style={{ fontSize: 11, color: "#666", letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>Services</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+              {bulkRows.map((row, i) => (
+                <div key={row.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input className="fi" placeholder={`Service name ${i + 1}`} value={row.name} onChange={e => updateBulkRow(row.id, "name", e.target.value)}
+                    style={{ flex: 2, padding: "9px 12px", background: "#000", border: "1px solid #2a2a2a", borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "inherit" }} />
+                  <div style={{ position: "relative", flex: 1 }}>
+                    <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: PINK, fontSize: 12 }}>₦</span>
+                    <input className="fi" type="number" min="0" placeholder="Price" value={row.price} onChange={e => updateBulkRow(row.id, "price", e.target.value)}
+                      style={{ width: "100%", padding: "9px 10px 9px 24px", background: "#000", border: "1px solid #2a2a2a", borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "inherit" }} />
+                  </div>
+                  {bulkRows.length > 1 && <button onClick={() => removeBulkRow(row.id)} style={{ ...b, width: 28, height: 28, borderRadius: "50%", border: "1px solid #333", background: "none", color: "#666", fontSize: 16, flexShrink: 0 }}>×</button>}
+                </div>
+              ))}
+            </div>
+            <button onClick={addBulkRow} style={{ width: "100%", padding: 8, background: "transparent", border: "1px dashed rgba(243,194,215,0.3)", borderRadius: 8, color: PINK, fontFamily: "inherit", fontSize: 12, cursor: "pointer", marginBottom: 18 }}>+ Add Row</button>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setShowBulkAdd(false)} style={{ ...b, flex: 1, padding: 11, background: "transparent", border: "1px solid #333", borderRadius: 8, color: "#888", fontSize: 13 }}>Cancel</button>
+              <button onClick={saveBulkAdd} style={{ ...b, flex: 2, padding: 11, background: PINK, border: "none", borderRadius: 8, color: "#000", fontSize: 13, fontWeight: 700 }}>Add Services</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BULK EDIT */}
+      {showBulkEdit && (
+        <div style={modalBg} onClick={() => setShowBulkEdit(false)}>
+          <div onClick={e => e.stopPropagation()} style={modalBox}>
+            <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 20, color: PINK, marginBottom: 6 }}>Bulk Edit Prices</div>
+            <div style={{ fontSize: 12, color: "#555", marginBottom: 14 }}>Edit all prices in a category at once.</div>
+            <select value={bulkEditCat} onChange={e => setBulkEditCat(e.target.value)} className="fi"
+              style={{ width: "100%", padding: "11px 14px", background: "#000", border: "1px solid #2a2a2a", borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "inherit", marginBottom: 14 }}>
+              {editData?.catOrder.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+              {bulkEditRows.map(row => (
+                <div key={row.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <div style={{ flex: 2, fontSize: 12, color: "#ccc", padding: "9px 0" }}>{row.name}</div>
+                  <div style={{ position: "relative", flex: 1 }}>
+                    <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: PINK, fontSize: 12 }}>₦</span>
+                    <input className="fi" type="number" min="0" value={row.price} onChange={e => updateBulkEditRow(row.id, "price", e.target.value)}
+                      style={{ width: "100%", padding: "9px 10px 9px 24px", background: "#000", border: "1px solid #2a2a2a", borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "inherit", textAlign: "right" }} />
+                  </div>
+                  <button onClick={() => removeBulkEditRow(row.id)} style={{ ...b, width: 28, height: 28, borderRadius: "50%", border: "1px solid #333", background: "none", color: "#666", fontSize: 16, flexShrink: 0 }}>×</button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setShowBulkEdit(false)} style={{ ...b, flex: 1, padding: 11, background: "transparent", border: "1px solid #333", borderRadius: 8, color: "#888", fontSize: 13 }}>Cancel</button>
+              <button onClick={saveBulkEdit} style={{ ...b, flex: 2, padding: 11, background: PINK, border: "none", borderRadius: 8, color: "#000", fontSize: 13, fontWeight: 700 }}>Save Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ SERVICES TAB ══ */}
+      {activeTab === "select" && (
+        <div style={{ maxWidth: 780, margin: "0 auto", padding: "0 16px 90px" }}>
+          <div style={{ position: "sticky", top: H, zIndex: 90, background: "#000", paddingTop: 13, paddingBottom: 11 }}>
+            <div style={{ position: "relative" }}>
+              <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#555" }}>🔍</span>
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search services…" className="fi"
+                style={{ width: "100%", padding: "11px 40px 11px 42px", background: "#111", border: "1px solid #2a2a2a", borderRadius: 10, color: "#fff", fontSize: 14, fontFamily: "inherit" }} />
+              {search && <button onClick={() => setSearch("")} style={{ ...b, position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#666", fontSize: 20 }}>×</button>}
+            </div>
+          </div>
+
+          {filteredSvcs && (
+            <div style={{ background: "#111", borderRadius: 12, border: "1px solid #222", overflow: "hidden", marginBottom: 10 }}>
+              <div style={{ padding: "9px 16px", borderBottom: "1px solid #222", fontSize: 11, color: "#555", letterSpacing: 2, textTransform: "uppercase" }}>{filteredSvcs.length} result{filteredSvcs.length !== 1 ? "s" : ""}</div>
+              {filteredSvcs.length === 0 ? <div style={{ padding: 24, textAlign: "center", color: "#555" }}>No services found</div>
+                : filteredSvcs.map(({ cat, idx, service }) => {
+                  const key = `${cat}|||${idx}`, isSel = !!selected[key];
+                  return (
+                    <div key={key} className="sr" onClick={() => toggleSvc(cat, idx)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", cursor: "pointer", background: isSel ? "rgba(243,194,215,0.08)" : "transparent", borderLeft: isSel ? `3px solid ${PINK}` : "3px solid transparent" }}>
+                      <div><div style={{ fontSize: 13, color: isSel ? PINK : "#e0e0e0" }}>{service.name}</div><div style={{ fontSize: 10, color: "#555", marginTop: 2 }}>{cat}</div></div>
+                      <div style={{ textAlign: "right" }}><div style={{ fontSize: 13, color: PINK, fontWeight: 600 }}>{fmt(service.price)}</div>{isSel && <div style={{ fontSize: 10, color: "#5a8a5a" }}>✓ Added</div>}</div>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+
+          {!filteredSvcs && Object.entries(services).map(([cat, items]) => {
+            const isOpen = openCat === cat, catSel = items.filter((_, i) => selected[`${cat}|||${i}`]).length;
+            return (
+              <div key={cat} style={{ marginBottom: 7, border: "1px solid #222", borderRadius: 10, overflow: "hidden" }}>
+                <div className="ch" onClick={() => toggleCat(cat)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "13px 16px", cursor: "pointer", background: isOpen ? "rgba(243,194,215,0.06)" : "#111" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 13, color: catSel > 0 ? PINK : "#ccc" }}>{cat}</span>
+                    {catSel > 0 && <span style={{ background: PINK, color: "#000", borderRadius: 10, padding: "1px 8px", fontSize: 10, fontWeight: 700 }}>{catSel}</span>}
+                  </div>
+                  <span style={{ color: "#555", fontSize: 17, display: "inline-block", transform: isOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>⌄</span>
+                </div>
+                {isOpen && (
+                  <div style={{ borderTop: "1px solid #222" }}>
+                    {items.map((svc, idx) => {
+                      const key = `${cat}|||${idx}`, isSel = !!selected[key];
+                      return (
+                        <div key={idx} className="sr" onClick={() => toggleSvc(cat, idx)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "11px 16px", cursor: "pointer", background: isSel ? "rgba(243,194,215,0.07)" : "transparent", borderLeft: isSel ? `3px solid ${PINK}` : "3px solid transparent" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <div style={{ width: 16, height: 16, borderRadius: 4, border: `1.5px solid ${isSel ? PINK : "#333"}`, background: isSel ? PINK : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                              {isSel && <span style={{ color: "#000", fontSize: 10, fontWeight: 700, lineHeight: 1 }}>✓</span>}
+                            </div>
+                            <div>
+                              <span style={{ fontSize: 13, color: isSel ? "#fff" : "#888" }}>{svc.name}</span>
+                              {svc.autoDiscount && <div style={{ fontSize: 10, color: "#7a9e7a", marginTop: 1 }}>₦5,000 discount with other services</div>}
+                            </div>
+                          </div>
+                          <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
+                            <div style={{ fontSize: 13, color: PINK }}>{fmt(svc.price)}</div>
+                            <div style={{ fontSize: 10, color: "#777" }}>{fmt(Math.round(svc.price * (1 + VAT_RATE)))} +VAT</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ══ CHECKOUT TAB ══ */}
+      {activeTab === "checkout" && (
+        <div style={{ maxWidth: 600, margin: "0 auto", padding: "20px 16px 60px" }}>
+          {selItems.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "60px 0" }}>
+              <div style={{ fontSize: 48, marginBottom: 16 }}>🛒</div>
+              <div style={{ fontSize: 16, color: "#555" }}>No services selected yet</div>
+              <button onClick={() => setActiveTab("select")} style={{ ...b, marginTop: 20, padding: "10px 24px", background: PINK, border: "none", borderRadius: 20, color: "#000", fontSize: 13, fontWeight: 600 }}>Browse Services</button>
+            </div>
+          ) : (
+            <>
+              <div style={{ background: "#111", borderRadius: 12, border: "1px solid #222", overflow: "hidden", marginBottom: 14 }}>
+                <div style={{ padding: "12px 16px", borderBottom: "1px solid #222", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 11, color: "#555", letterSpacing: 2, textTransform: "uppercase" }}>Selected Services</span>
+                  <button onClick={clearAll} style={{ ...b, fontSize: 11, color: "#c55", background: "rgba(255,80,80,0.08)", border: "1px solid rgba(255,80,80,0.2)", borderRadius: 6, padding: "4px 10px" }}>Clear All</button>
+                </div>
+                {selItems.map(({ key, service, qty }) => (
+                  <div key={key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, color: "#e0e0e0" }}>{service.name}</div>
+                      <div style={{ fontSize: 11, color: "#555", marginTop: 2 }}>{fmt(service.price)} each</div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 12 }}>
+                      <button onClick={() => updateQty(key, -1)} style={{ ...b, width: 26, height: 26, borderRadius: "50%", border: "1px solid #333", background: "none", color: "#888", fontSize: 17 }}>−</button>
+                      <span style={{ fontSize: 13, minWidth: 20, textAlign: "center", color: PINK, fontWeight: 600 }}>{qty}</span>
+                      <button onClick={() => updateQty(key, 1)} style={{ ...b, width: 26, height: 26, borderRadius: "50%", border: "1px solid #333", background: "none", color: "#888", fontSize: 17 }}>+</button>
+                    </div>
+                    <div style={{ textAlign: "right", minWidth: 100, marginLeft: 12 }}>
+                      <div style={{ fontSize: 13, color: PINK, fontWeight: 600 }}>{fmt(service.price * qty)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {hasAutoDiscount && !hasNonConsult && (
+                <div style={{ background: "rgba(243,194,215,0.06)", border: "1px solid rgba(243,194,215,0.2)", borderRadius: 8, padding: "11px 14px", marginBottom: 14, fontSize: 12, color: PINK }}>
+                  The ₦5,000 discount applies only when other services are also booked.
+                </div>
+              )}
+              {suppressConsult && hasNonConsult && hasAutoDiscount && (
+                <div style={{ background: "rgba(243,194,215,0.04)", border: "1px solid rgba(243,194,215,0.15)", borderRadius: 8, padding: "10px 14px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "#666" }}>Consultation discount removed</span>
+                  <button onClick={() => setSuppressConsult(false)} style={{ ...b, fontSize: 11, color: PINK, background: "transparent", border: "1px solid rgba(243,194,215,0.3)", borderRadius: 6, padding: "3px 10px" }}>Restore</button>
+                </div>
+              )}
+
+              <div style={{ background: "#0d0d0d", borderRadius: 12, border: "1px solid rgba(243,194,215,0.25)", padding: 20 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                  <span style={{ color: "#888", fontSize: 14 }}>Subtotal</span>
+                  <span style={{ color: "#ccc", fontSize: 14 }}>{fmt(subtotal)}</span>
+                </div>
+
+                {(consultDisc > 0 || manualDisc > 0) && (
+                  <div style={{ background: "rgba(90,138,90,0.1)", border: "1px solid rgba(90,138,90,0.25)", borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, color: "#7a9e7a", letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>Discounts Applied</div>
+                    {consultDisc > 0 && (
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <span style={{ fontSize: 13, color: "#8aba8a" }}>🏷 Consultation discount</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 13, color: "#8aba8a", fontWeight: 600 }}>− {fmt(consultDisc)}</span>
+                          <button onClick={() => setSuppressConsult(true)} style={{ ...b, width: 20, height: 20, borderRadius: "50%", border: "1px solid rgba(90,138,90,0.4)", background: "transparent", color: "#7a9e7a", fontSize: 13 }}>×</button>
+                        </div>
+                      </div>
+                    )}
+                    {discounts.filter(d => (parseFloat(d.value.replace(/[^0-9.]/g, "")) || 0) > 0).map(d => {
+                      const raw = parseFloat(d.value.replace(/[^0-9.]/g, "")) || 0;
+                      const val = d.type === "percent" ? Math.round((raw / 100) * subtotal) : raw;
+                      return (
+                        <div key={d.id} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                          <span style={{ fontSize: 13, color: "#8aba8a" }}>🏷 Manual discount{d.type === "percent" ? ` (${raw}%)` : ""}</span>
+                          <span style={{ fontSize: 13, color: "#8aba8a", fontWeight: 600 }}>− {fmt(val)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                  <span style={{ color: "#aaa", fontSize: 14 }}>Subtotal after discounts</span>
+                  <span style={{ color: "#fff", fontSize: 14, fontWeight: 600 }}>{fmt(discountedSubtotal)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid #222" }}>
+                  <span style={{ color: "#888", fontSize: 14 }}>VAT (7.5%)</span>
+                  <span style={{ color: "#ccc", fontSize: 14 }}>{fmt(vat)}</span>
+                </div>
+
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ fontSize: 11, color: "#555", letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>Manual Discounts</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {discounts.map(d => {
+                      const raw = parseFloat(d.value.replace(/[^0-9.]/g, "")) || 0;
+                      const equiv = d.type === "percent" ? Math.round((raw / 100) * subtotal) : 0;
+                      return (
+                        <div key={d.id}>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <div style={{ display: "flex", background: "#1a1a1a", borderRadius: 20, padding: 3, border: "1px solid #2a2a2a", flexShrink: 0 }}>
+                              {[{ val: "naira", label: "₦" }, { val: "percent", label: "%" }].map(({ val, label }) => (
+                                <button key={val} onClick={() => updateDiscount(d.id, "type", val)} style={{ ...b, padding: "3px 11px", borderRadius: 16, border: "none", fontSize: 12, fontWeight: 600, background: d.type === val ? PINK : "transparent", color: d.type === val ? "#000" : "#666" }}>{label}</button>
+                              ))}
+                            </div>
+                            <div style={{ position: "relative", flex: 1 }}>
+                              <span style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", color: PINK, fontSize: 13 }}>{d.type === "naira" ? "₦" : "%"}</span>
+                              <input className="fi" type="number" min="0" value={d.value} onChange={e => updateDiscount(d.id, "value", e.target.value)} placeholder={d.type === "naira" ? "Amount…" : "Percentage…"}
+                                style={{ width: "100%", padding: "10px 12px 10px 26px", background: "#000", border: "1px solid #2a2a2a", borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "inherit" }} />
+                            </div>
+                            {discounts.length > 1 && <button onClick={() => removeDiscount(d.id)} style={{ ...b, width: 30, height: 30, borderRadius: "50%", border: "1px solid #333", background: "none", color: "#666", fontSize: 18, flexShrink: 0 }}>×</button>}
+                          </div>
+                          {d.type === "percent" && raw > 0 && <div style={{ fontSize: 11, color: "#666", marginTop: 4, paddingLeft: 4 }}>= {fmt(equiv)} off subtotal</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button onClick={addDiscount} style={{ marginTop: 10, width: "100%", padding: 9, background: "transparent", border: "1px dashed rgba(243,194,215,0.3)", borderRadius: 8, color: PINK, fontFamily: "inherit", fontSize: 12, cursor: "pointer" }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = PINK; e.currentTarget.style.background = "rgba(243,194,215,0.05)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(243,194,215,0.3)"; e.currentTarget.style.background = "transparent"; }}>
+                    + Add Additional Discount
+                  </button>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 16, borderTop: "1px solid rgba(243,194,215,0.2)" }}>
+                  <div>
+                    <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 18, color: PINK }}>Amount Due</div>
+                    {totalDisc > 0 && <div style={{ fontSize: 11, color: "#7a9e7a", marginTop: 2 }}>Saved {fmt(totalDisc)}</div>}
+                  </div>
+                  <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 26, color: PINK, fontWeight: 700 }}>{fmt(finalTotal)}</div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ══ ADMIN TAB ══ */}
+      {activeTab === "admin" && isAdmin && editData && (
+        <div style={{ maxWidth: 780, margin: "0 auto", padding: "0 16px 90px" }}>
+          <div style={{ position: "sticky", top: H, zIndex: 90, background: "#000", paddingTop: 13, paddingBottom: 11 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 11, gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 13, color: "#fff", fontWeight: 600 }}>Edit Services</div>
+                <div style={{ fontSize: 10, color: "#555", marginTop: 2 }}>{editData.catOrder.length} categories · {editData.catOrder.reduce((s, c) => s + (editData.prices[c]?.length || 0), 0)} services</div>
+              </div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                {saveStatus === "saving" && <span style={{ fontSize: 12, color: "#888" }}>Saving…</span>}
+                {saveStatus === "saved" && <span style={{ fontSize: 12, color: "#7a9e7a" }}>✓ Saved</span>}
+                {saveStatus === "error" && <span style={{ fontSize: 12, color: "#c0392b" }}>✗ Failed</span>}
+                <button onClick={sortAlpha} style={{ ...b, padding: "7px 11px", background: "transparent", border: "1px solid #333", borderRadius: 7, color: "#888", fontSize: 11 }}>Sort A–Z</button>
+                <button onClick={() => setShowAddCat(true)} style={{ ...b, padding: "7px 11px", background: "rgba(243,194,215,0.08)", border: "1px solid rgba(243,194,215,0.3)", borderRadius: 7, color: PINK, fontSize: 11 }}>+ Category</button>
+                <button onClick={openBulkAdd} style={{ ...b, padding: "7px 11px", background: "rgba(243,194,215,0.08)", border: "1px solid rgba(243,194,215,0.3)", borderRadius: 7, color: PINK, fontSize: 11 }}>Bulk Add</button>
+                <button onClick={() => openBulkEdit(editData.catOrder[0])} style={{ ...b, padding: "7px 11px", background: "rgba(243,194,215,0.08)", border: "1px solid rgba(243,194,215,0.3)", borderRadius: 7, color: PINK, fontSize: 11 }}>Bulk Edit</button>
+                <button onClick={() => setShowReset(true)} style={{ ...b, padding: "7px 11px", background: "rgba(192,57,43,0.1)", border: "1px solid rgba(192,57,43,0.3)", borderRadius: 7, color: "#e07070", fontSize: 11 }}>Reset</button>
+                <button onClick={handleSave} style={{ ...b, padding: "7px 16px", background: PINK, border: "none", borderRadius: 7, color: "#000", fontSize: 12, fontWeight: 700 }}>Save All</button>
+              </div>
+            </div>
+            <div style={{ position: "relative" }}>
+              <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#555" }}>🔍</span>
+              <input value={adminSearch} onChange={e => setAdminSearch(e.target.value)} placeholder="Search services to edit…" className="fi"
+                style={{ width: "100%", padding: "11px 40px 11px 42px", background: "#111", border: "1px solid #2a2a2a", borderRadius: 10, color: "#fff", fontSize: 14, fontFamily: "inherit" }} />
+              {adminSearch && <button onClick={() => setAdminSearch("")} style={{ ...b, position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#666", fontSize: 20 }}>×</button>}
+            </div>
+          </div>
+
+          {editData.catOrder.map((cat, catIdx) => {
+            const items = editData.prices[cat] || [];
+            const searching = adminSearch.trim() !== "";
+            const filtered = searching
+              ? items.map((s, i) => ({ s, i })).filter(({ s }) => s.name.toLowerCase().includes(adminSearch.toLowerCase()))
+              : items.map((s, i) => ({ s, i }));
+            if (searching && filtered.length === 0) return null;
+            const isOpen = searching || editOpenCat === cat;
+            const isAdding = addForm?.cat === cat;
+            return (
+              <div key={cat} style={{ marginBottom: 7, border: "1px solid #222", borderRadius: 10, overflow: "hidden" }}>
+                <div style={{ display: "flex", alignItems: "stretch", background: isOpen ? "rgba(243,194,215,0.06)" : "#111" }}>
+                  {!searching && (
+                    <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 6px 0 8px", gap: 3, borderRight: "1px solid #1a1a1a" }}>
+                      <button className="mb" onClick={() => moveCat(catIdx, -1)} disabled={catIdx === 0}
+                        style={{ ...b, width: 22, height: 18, border: "1px solid #2a2a2a", background: "transparent", color: catIdx === 0 ? "#222" : "#666", cursor: catIdx === 0 ? "default" : "pointer", borderRadius: 4, fontSize: 9 }}>▲</button>
+                      <button className="mb" onClick={() => moveCat(catIdx, 1)} disabled={catIdx === editData.catOrder.length - 1}
+                        style={{ ...b, width: 22, height: 18, border: "1px solid #2a2a2a", background: "transparent", color: catIdx === editData.catOrder.length - 1 ? "#222" : "#666", cursor: catIdx === editData.catOrder.length - 1 ? "default" : "pointer", borderRadius: 4, fontSize: 9 }}>▼</button>
+                    </div>
+                  )}
+                  <div onClick={() => !searching && setEditOpenCat(p => p === cat ? null : cat)} className={searching ? "" : "ch"}
+                    style={{ flex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "13px 12px", cursor: searching ? "default" : "pointer" }}>
+                    <span style={{ fontSize: 13, color: "#ccc" }}>{cat}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 11, color: "#555" }}>{items.length} item{items.length !== 1 ? "s" : ""}</span>
+                      {!searching && <span style={{ color: "#555", fontSize: 17, display: "inline-block", transform: isOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>⌄</span>}
+                    </div>
+                  </div>
+                  {!searching && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 10px", borderLeft: "1px solid #1a1a1a" }}>
+                      <button onClick={e => { e.stopPropagation(); openBulkEdit(cat); }}
+                        style={{ ...b, fontSize: 11, color: PINK, background: "transparent", border: "1px solid rgba(243,194,215,0.2)", borderRadius: 5, padding: "3px 7px", whiteSpace: "nowrap" }}>Edit All</button>
+                      <button className="db" onClick={e => { e.stopPropagation(); setDeleteCatTarget(cat); }}
+                        style={{ ...b, width: 26, height: 26, borderRadius: 5, border: "1px solid #2a2a2a", background: "transparent", color: "#555", fontSize: 13 }}>🗑</button>
+                    </div>
+                  )}
+                </div>
+
+                {isOpen && (
+                  <div style={{ borderTop: "1px solid #222" }}>
+                    {filtered.length === 0 && !isAdding && <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: "#444" }}>No services — add one below</div>}
+                    {filtered.map(({ s: svc, i: idx }) => (
+                      <div key={`${cat}-${idx}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", borderBottom: "1px solid #181818" }}>
+                        <div style={{ flex: 1, marginRight: 12 }}>
+                          <div style={{ fontSize: 13, color: "#ccc" }}>{svc.name}</div>
+                          {svc.autoDiscount && <div style={{ fontSize: 10, color: "#7a9e7a", marginTop: 1 }}>Includes ₦5,000 auto-discount</div>}
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                          <span style={{ color: PINK, fontSize: 13 }}>₦</span>
+                          <input className="fi" type="number" min="0" value={svc.price} onChange={e => setPrice(cat, idx, e.target.value)}
+                            style={{ width: 120, padding: "8px 10px", background: "#000", border: "1px solid #2a2a2a", borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "inherit", textAlign: "right" }} />
+                          <button className="db" onClick={() => deleteSvc(cat, idx)}
+                            style={{ ...b, width: 28, height: 28, borderRadius: 6, border: "1px solid #2a2a2a", background: "transparent", color: "#555", fontSize: 13 }}>🗑</button>
+                        </div>
+                      </div>
+                    ))}
+                    {!searching && (isAdding ? (
+                      <div style={{ padding: "14px 16px", borderTop: "1px solid #1a1a1a", background: "rgba(243,194,215,0.03)" }}>
+                        <div style={{ fontSize: 11, color: PINK, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>New Service</div>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <input autoFocus className="fi" placeholder="Service name" value={addForm.name} onChange={e => setAddForm(p => ({ ...p, name: e.target.value }))}
+                            style={{ flex: 2, minWidth: 140, padding: "9px 12px", background: "#000", border: "1px solid #2a2a2a", borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "inherit" }} />
+                          <div style={{ position: "relative", flex: 1, minWidth: 110 }}>
+                            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: PINK, fontSize: 12 }}>₦</span>
+                            <input className="fi" type="number" min="0" placeholder="Price" value={addForm.price} onChange={e => setAddForm(p => ({ ...p, price: e.target.value }))} onKeyDown={e => e.key === "Enter" && addSvc(cat)}
+                              style={{ width: "100%", padding: "9px 10px 9px 24px", background: "#000", border: "1px solid #2a2a2a", borderRadius: 8, color: "#fff", fontSize: 13, fontFamily: "inherit" }} />
+                          </div>
+                          <button onClick={() => addSvc(cat)} style={{ ...b, padding: "9px 18px", background: PINK, border: "none", borderRadius: 8, color: "#000", fontSize: 12, fontWeight: 700, flexShrink: 0 }}>Add</button>
+                          <button onClick={() => setAddForm(null)} style={{ ...b, padding: "9px 13px", background: "transparent", border: "1px solid #333", borderRadius: 8, color: "#666", fontSize: 12, flexShrink: 0 }}>Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button onClick={() => { setAddForm({ cat, name: "", price: "" }); setEditOpenCat(cat); }}
+                        style={{ ...b, width: "100%", padding: 11, background: "transparent", border: "none", borderTop: "1px solid #1a1a1a", color: PINK, fontFamily: "inherit", fontSize: 12, cursor: "pointer" }}
+                        onMouseEnter={e => e.currentTarget.style.background = "rgba(243,194,215,0.04)"}
+                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        + Add Service to {cat}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#000", borderTop: "1px solid rgba(192,57,43,0.25)", padding: "12px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", zIndex: 100 }}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setShowAddCat(true)} style={{ ...b, padding: "8px 14px", background: "rgba(243,194,215,0.08)", border: "1px solid rgba(243,194,215,0.25)", borderRadius: 16, color: PINK, fontFamily: "inherit", fontSize: 11 }}>+ Category</button>
+              <button onClick={openBulkAdd} style={{ ...b, padding: "8px 14px", background: "rgba(243,194,215,0.08)", border: "1px solid rgba(243,194,215,0.25)", borderRadius: 16, color: PINK, fontFamily: "inherit", fontSize: 11 }}>Bulk Add</button>
+            </div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              {saveStatus === "saved" && <span style={{ fontSize: 12, color: "#7a9e7a" }}>✓ Saved</span>}
+              <button onClick={handleSave} style={{ ...b, padding: "9px 22px", background: PINK, border: "none", borderRadius: 20, color: "#000", fontSize: 12, fontWeight: 700 }}>Save All Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* STICKY BILL BAR */}
+      {selItems.length > 0 && activeTab === "select" && (
+        <div onClick={() => setActiveTab("checkout")} style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#000", borderTop: "1px solid rgba(243,194,215,0.3)", padding: "13px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", zIndex: 100 }}>
+          <div>
+            <div style={{ fontSize: 11, color: "#555", letterSpacing: 1 }}>{selItems.length} service{selItems.length !== 1 ? "s" : ""} selected</div>
+            <div style={{ fontSize: 13, color: PINK, marginTop: 2 }}>
+              {fmt(subtotal)}{totalDisc > 0 ? ` − ${fmt(totalDisc)}` : ""} + VAT = <strong>{fmt(finalTotal)}</strong>
+            </div>
+          </div>
+          <div style={{ background: PINK, color: "#000", padding: "8px 18px", borderRadius: 20, fontSize: 12, fontWeight: 700, flexShrink: 0 }}>VIEW BILL →</div>
+        </div>
+      )}
+
+      {showBackTop && (
+        <button className="bt" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          style={{ ...b, position: "fixed", bottom: selItems.length > 0 && activeTab === "select" ? 78 : 22, right: 18, zIndex: 200, background: "rgba(0,0,0,0.85)", border: `1px solid ${PINK}`, color: PINK, borderRadius: "50%", width: 40, height: 40, fontSize: 17 }}>↑</button>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
